@@ -1,0 +1,36 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "debug",
+            "type": "shell",
+            "command": "",
+            "args": ["gcc","-g", "client.c", "ring_buffer.c", "-o","a.out"]
+        },
+        {
+            "label": "Compile and run",
+            "type": "shell",
+            "command": "",
+            "args": [
+                "gcc","-g", "buffer_manager.c", "ring_buffer.c", "-o","a.out", "&&", "clear" , "&&" , "./a.out"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true  
+            },
+            "problemMatcher": {
+                "owner": "cpp",
+                "fileLocation": ["relative", "${workspaceRoot}"],
+                "pattern": {
+                    "regexp": "^(.*):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "severity": 4,
+                    "message": 5
+                }
+            }
+        },
+        
+    ]
+}
