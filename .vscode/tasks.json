@@ -5,7 +5,7 @@
             "label": "debug",
             "type": "shell",
             "command": "",
-            "args": ["gcc","-g", "ring_buffer.c", "-o","ring_buffer.out"]
+            "args": ["gcc","-g", "test_pilote.c", "-o","test_pilote.o"]
         },
         {
             "label": "Compile and run",

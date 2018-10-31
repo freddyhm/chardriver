@@ -22,9 +22,9 @@ dev_t dev;
 struct class *cclass;
 struct cdev mycdev; 
 static const int SIMPLE_BUFFER_SIZE = 6;
-static const int RING_BUFFER_SIZE = 10;
+static const int RING_BUFFER_SIZE = 6;
 static char simple_write_buffer[6];
-//static char simple_read_buffer[6];
+static char simple_read_buffer[6];
 
 static char *write_buffer;
 static cbuf_handle_t write_cbuf;
@@ -56,6 +56,33 @@ static struct file_operations myModule_fops = {
 
 static int  pilote_init (void);
 static void pilote_exit (void);
+
+static void set_up_ring_read_buffer(void){
+
+	// write to ring read buffer 
+	int i = 0;
+	while(i < RING_BUFFER_SIZE){
+		circular_buf_put(read_cbuf, 'a');
+		i++;
+	}
+
+	i = 0;
+	// move from ring read buffer to simple read buffer
+	while(!circular_buf_empty(read_cbuf) && i < RING_BUFFER_SIZE)
+	{
+		char data = 'c';
+		circular_buf_get(read_cbuf, &data);
+		simple_read_buffer[i] = data;
+		i++;
+	}
+
+	i = 0;
+	while(i < SIMPLE_BUFFER_SIZE){
+		printk("IN SIMPLE READ BUFFER: %c", simple_read_buffer[i]);
+		i++;
+	}
+
+}
 
 // buffer is full if last index is not 0 (default value)
 static bool is_simple_write_buffer_full(void){
@@ -120,7 +147,7 @@ static void move_simple_to_ring_write_buffer(void){
 static void get_ring_write_buffer(void){
 	while(!circular_buf_empty(write_cbuf))
 	{
-		char data;
+		char data = 'c';
 		circular_buf_get(write_cbuf, &data);
 		printk("RING BUFFER: %c ", data);
 	}	
@@ -128,12 +155,11 @@ static void get_ring_write_buffer(void){
 
 static ssize_t module_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos) {
    
-   // write to ring read buffer 
-   // move from ring read buffer to simple read buffer
-   // move from simple read buffer to user
+  	// move from simple read buffer to user
+	copy_to_user(buf, simple_read_buffer, count); 
    
-   printk(KERN_WARNING"Pilote READ : Hello, world\n");
-   return 0;
+	printk(KERN_WARNING"Pilote READ : Hello, world\n");
+	return 0;
 }
 
 static ssize_t module_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos) {
@@ -180,6 +206,7 @@ static __init int pilote_init(void)
 {
 	create_ring_write_buffer();
 	create_ring_read_buffer();
+	set_up_ring_read_buffer();
 
 	alloc_chrdev_region(&dev, 0, 1, "MyDriver");
 

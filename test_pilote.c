@@ -8,11 +8,10 @@ int main(void){
 
 	int fd;
 	char BufOut[6] = "FREDDY";
-	int BufIn[10];
+	char BufIn[6];
 	int n, ret;
 
 	fd = open("/dev/myModuleTest", O_RDWR);
-
 
 	if(fd < 0){
 		printf("Erreur d'ouverture = %d\n", fd);
@@ -28,40 +27,19 @@ int main(void){
 		n++;
 	}
 
-	printf("write (%s:%u) => message = %s\n", __FUNCTION__, __LINE__, BufOut);
+	printf("write %s \n",BufOut);
 
-	/*
-
+	
 	n = 0;
-	while (n < 9){
-		ret = read(fd, &BufIn[n], 9-n);
-		printf("read (%s:%u) => message = %c\n", __FUNCTION__, __LINE__, BufIn[n]);
+	while (n < 6){
+		ret = read(fd, &BufIn[n], 1);
+		printf("value read: %c\n", BufIn[n]);
 		n++;
 	}
 
-	BufIn[9] = 0;
-
-	*/
-	
-	int exit = close(fd);
-	printf("%i", exit);
-
-	/*
-	n = 0;
-
-	while (n < 9){
-		ret = read(fd, &BufIn[n], 9-n);
-		n++
-	}
-
-	BufIn[9] = 0;
-	printf("read (%s:%u) => message = %s\n", __FUNCTION__, __LINE__, BufIn);
-
 	int exit = close(fd);
 
 	printf("%i", exit);
-	*/
-
 }
 
 
