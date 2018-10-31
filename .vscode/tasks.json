@@ -5,14 +5,14 @@
             "label": "debug",
             "type": "shell",
             "command": "",
-            "args": ["gcc","-g", "client.c", "ring_buffer.c", "-o","a.out"]
+            "args": ["gcc","-g", "ring_buffer.c", "-o","ring_buffer.out"]
         },
         {
             "label": "Compile and run",
             "type": "shell",
             "command": "",
             "args": [
-                "gcc","-g", "buffer_manager.c", "ring_buffer.c", "-o","a.out", "&&", "clear" , "&&" , "./a.out"
+                "gcc","-g", "test_pilote.c", "-o","test_pilote.o", "&&", "clear" , "&&" , "./test_pilote.o"
             ],
             "group": {
                 "kind": "build",

@@ -1,6 +1,10 @@
 {
     "files.associations": {
         "stat.h": "c",
-        "string.h": "c"
+        "string.h": "c",
+        "stdlib.h": "c",
+        "ring_buffer.h": "c",
+        "types.h": "c",
+        "string_view": "c"
     }
 }

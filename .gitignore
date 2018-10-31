@@ -1,2 +1,9 @@
-a.out
-.vscode
+*.out
+Module.symvers
+modules.order
+pilote_char.ko
+pilote_char.mod.order
+*.mod.c
+*.o
+.*
+*.ko
