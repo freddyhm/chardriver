@@ -7,8 +7,8 @@
 int main(void){
 
 	int fd;
-	char BufOut[6] = "FREDDY";
-	char BufIn[6];
+	char BufOut[7] = "FREDDY";
+	char BufIn[7];
 	int n, ret;
 
 	fd = open("/dev/myModuleTest", O_RDWR);
@@ -26,16 +26,16 @@ int main(void){
 		ret = write(fd, &BufOut[n], 1);
 		n++;
 	}
-
 	printf("write %s \n",BufOut);
 
 	
 	n = 0;
 	while (n < 6){
 		ret = read(fd, &BufIn[n], 1);
-		printf("value read: %c\n", BufIn[n]);
 		n++;
 	}
+
+	printf("value read: %s\n", BufIn);
 
 	int exit = close(fd);
 

@@ -70,17 +70,22 @@ static void set_up_ring_read_buffer(void){
 	// move from ring read buffer to simple read buffer
 	while(!circular_buf_empty(read_cbuf) && i < RING_BUFFER_SIZE)
 	{
-		char data = 'c';
+		char data = {0};
 		circular_buf_get(read_cbuf, &data);
 		simple_read_buffer[i] = data;
 		i++;
 	}
 
 	i = 0;
-	while(i < SIMPLE_BUFFER_SIZE){
-		printk("IN SIMPLE READ BUFFER: %c", simple_read_buffer[i]);
+	while(i < RING_BUFFER_SIZE){
+		char ring_data = {0};
+		circular_buf_get(read_cbuf, &ring_data);
+		printk("IN RING BUFFER AFTER move IN READ: %c", ring_data);
 		i++;
 	}
+
+	
+	printk("IN SIMPLE READ BUFFER END: %s", simple_read_buffer);
 
 }
 
@@ -153,9 +158,14 @@ static void get_ring_write_buffer(void){
 	}	
 }
 
+static void seriallSR(void){
+	
+}
+
 static ssize_t module_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos) {
    
   	// move from simple read buffer to user
+	printk("IN SIMPLE READ BUFFER BEFORE SENDING TO USER: %s", simple_read_buffer);
 	copy_to_user(buf, simple_read_buffer, count); 
    
 	printk(KERN_WARNING"Pilote READ : Hello, world\n");
