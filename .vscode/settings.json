@@ -5,6 +5,8 @@
         "stdlib.h": "c",
         "ring_buffer.h": "c",
         "types.h": "c",
-        "string_view": "c"
+        "string_view": "c",
+        "fcntl.h": "c",
+        "unistd.h": "c"
     }
 }

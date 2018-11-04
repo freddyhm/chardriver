@@ -7,31 +7,45 @@
 #include <linux/syscalls.h>
 #include <linux/types.h>
 #include <linux/stat.h> 
-
+#include <linux/ioport.h>
 #include <linux/kernel.h>
 #include <linux/kthread.h>
 #include <linux/cdev.h>
+#include <linux/spinlock.h>
+#include <linux/cred.h>
+#include <linux/semaphore.h>
 #include "ring_buffer.c"
-
 
 MODULE_AUTHOR("Freddy Hidalgo-Monchez");
 MODULE_LICENSE("Dual BSD/GPL");
 
-// global variables
+// vars to keep track of open modes and user count
+static int read_count;
+static int write_count;
+static int user_count;
+static unsigned int user_owner_id;
+static DEFINE_SPINLOCK(access_lock);
+static int activeOpenModeList[3];
+
+// vars to sleep
+static DECLARE_WAIT_QUEUE_HEAD(waitq); 
+static struct semaphore sem;
+static struct semaphore write_sem;
+
+// vars to register device 
 dev_t dev;
 struct class *cclass;
 struct cdev mycdev; 
-static const int SIMPLE_BUFFER_SIZE = 6;
-static const int RING_BUFFER_SIZE = 6;
-static char simple_write_buffer[6];
-static char simple_read_buffer[6];
 
+// vars to manage buffers
+static const int SIMPLE_BUFFER_SIZE = 16;
+static const int RING_BUFFER_SIZE = 16;
+static char simple_write_buffer[16];
+static char simple_read_buffer[16];
 static char *write_buffer;
 static cbuf_handle_t write_cbuf;
-
-static char *read_buffer;
-static cbuf_handle_t read_cbuf;
-
+static char *RxBuf;
+static cbuf_handle_t RxBuf_cbuf;
 
 static ssize_t module_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos);
 static ssize_t module_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos);
@@ -57,53 +71,146 @@ static struct file_operations myModule_fops = {
 static int  pilote_init (void);
 static void pilote_exit (void);
 
+// ------------------ RING WRITE BUFFER FUNCTIONS -------------------
+
+// cbuf is a handler we create to manage operations 
+static void create_ring_write_buffer(void)
+{
+    write_buffer  = kmalloc(RING_BUFFER_SIZE * sizeof(char), GFP_KERNEL);
+	write_cbuf = circular_buf_init(write_buffer, RING_BUFFER_SIZE);
+}
+
+// ------------------ RING READ BUFFER FUNCTIONS -------------------
+
+static void create_ring_read_buffer(void)
+{
+	// cbuf is a handler we create to manage operations 
+    RxBuf  = kmalloc(RING_BUFFER_SIZE * sizeof(char), GFP_KERNEL);
+	RxBuf_cbuf = circular_buf_init(RxBuf, RING_BUFFER_SIZE);
+}
+
 static void set_up_ring_read_buffer(void){
 
 	// write to ring read buffer 
 	int i = 0;
 	while(i < RING_BUFFER_SIZE){
-		circular_buf_put(read_cbuf, 'a');
+		circular_buf_put(RxBuf_cbuf, 'a');
 		i++;
 	}
+}
 
-	i = 0;
-	// move from ring read buffer to simple read buffer
-	while(!circular_buf_empty(read_cbuf) && i < RING_BUFFER_SIZE)
+// ------------------ RING TO SIMPLE BUFFER READ FUNCTIONS -------------------
+
+static void fill_simple_read_buffer(char data){
+
+	int i = 0;
+	bool is_transferred = false; 
+
+    while(i < SIMPLE_BUFFER_SIZE)
 	{
-		char data = {0};
-		circular_buf_get(read_cbuf, &data);
-		simple_read_buffer[i] = data;
-		i++;
-	}
+		if(!is_transferred && simple_read_buffer[i] == 0){
+			simple_read_buffer[i] = data;
+			is_transferred = true;
+		}
 
-	i = 0;
-	while(i < RING_BUFFER_SIZE){
-		char ring_data = {0};
-		circular_buf_get(read_cbuf, &ring_data);
-		printk("IN RING BUFFER AFTER move IN READ: %c", ring_data);
 		i++;
-	}
-
-	
-	printk("IN SIMPLE READ BUFFER END: %s", simple_read_buffer);
+	};
 
 }
 
+// sends from ring read to simple only once 
+static bool move_ring_read_to_simple(void){
+
+	if(!circular_buf_empty(RxBuf_cbuf)){
+		char data = 'c';
+		circular_buf_get(RxBuf_cbuf, &data);
+		printk("data retrieved: %c", data);
+		fill_simple_read_buffer(data);
+		return true;
+	}else{
+		return false;
+	}
+}
+
+
+// ------------------ SIMPLE READ BUFFER FUNCTIONS -------------------
+
+static void replace_with_zeroes_read_buffer(int dataSentCount){
+
+	int i;
+	i = 0;
+
+	while(i < dataSentCount){
+		simple_read_buffer[i] = 0;
+		i++;
+	}	
+
+}
+
+static void remove_simple_read_buffer(int dataSentCount){
+
+	int i;
+	int oldIndex;
+	oldIndex = 0;
+	i = 0;
+
+	// set data in buffer to 0s 
+	replace_with_zeroes_read_buffer(dataSentCount);
+
+	// shift data that remains to the left
+	while((dataSentCount + i) < SIMPLE_BUFFER_SIZE){
+		oldIndex = dataSentCount + i;
+		simple_read_buffer[i] = simple_read_buffer[oldIndex];
+		simple_read_buffer[oldIndex] = 0;
+		i++;
+	}
+}
+
+static int get_simple_read_buffer_count(void){
+
+	int i;
+	int dataCount;
+	i = 0;
+	dataCount = 0;
+
+	while(i < SIMPLE_BUFFER_SIZE)
+	{
+		if(simple_read_buffer[i] != 0){
+			dataCount++;
+		}
+
+		i++;
+	};
+
+	return dataCount;
+}
+
+// ------------------ SIMPLE WRITE BUFFER FUNCTIONS -------------------
+
 // buffer is full if last index is not 0 (default value)
+// we add data continguously 
 static bool is_simple_write_buffer_full(void){
 	int last_index = (sizeof(simple_write_buffer)/sizeof(char)) - 1;
 	return (simple_write_buffer[last_index] != 0);
 }
 
-static void get_simple_write_buffer(void){
+static int get_simple_write_buffer_count(void){
 	
-	int i = 0;
+	int i;
+	int dataCount;
+	i = 0;
+	dataCount = 0;
 
-    while(i < SIMPLE_BUFFER_SIZE)
+	while(i < SIMPLE_BUFFER_SIZE)
 	{
-		printk("VALUE IN SIMPLE: %c\n" , simple_write_buffer[i]);
+		if(simple_write_buffer[i] != 0){
+			dataCount++;
+		}
+
 		i++;
-	};
+	}
+
+	return dataCount;
 }
 
 static void fill_simple_write_buffer(char data){
@@ -121,21 +228,6 @@ static void fill_simple_write_buffer(char data){
 		i++;
 	};
 }
-
-// cbuf is a handler we create to manage operations 
-static void create_ring_write_buffer(void)
-{
-    write_buffer  = kmalloc(RING_BUFFER_SIZE * sizeof(char), GFP_KERNEL);
-	write_cbuf = circular_buf_init(write_buffer, RING_BUFFER_SIZE);
-}
-
-// cbuf is a handler we create to manage operations 
-static void create_ring_read_buffer(void)
-{
-    read_buffer  = kmalloc(RING_BUFFER_SIZE * sizeof(char), GFP_KERNEL);
-	read_cbuf = circular_buf_init(read_buffer, RING_BUFFER_SIZE);
-}
-
 
 // transfer simple buffer values to ring buffer and set simple buffer values to 0
 static void move_simple_to_ring_write_buffer(void){
@@ -158,63 +250,211 @@ static void get_ring_write_buffer(void){
 	}	
 }
 
-static void seriallSR(void){
-	
-}
+// ------------------ MAIN DRIVER FUNCTIONS -------------------
 
 static ssize_t module_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos) {
-   
-  	// move from simple read buffer to user
-	printk("IN SIMPLE READ BUFFER BEFORE SENDING TO USER: %s", simple_read_buffer);
-	copy_to_user(buf, simple_read_buffer, count); 
-   
+	
+	int dataSentCount;
+	int error_num;
+
+	// grab the semaphore
+	if (down_interruptible(&sem)){
+		 printk("Unable to acquire Semaphore\n");
+		return -ERESTARTSYS;
+	}
+
+	// non blocking and our data count is 0
+	if(filp->f_flags & O_NONBLOCK && (get_simple_read_buffer_count() == 0)){
+			printk("NO DATA SENT TO USER!");
+			return -EAGAIN;
+	}
+
+	while(count > get_simple_read_buffer_count() && !(filp->f_flags & O_NONBLOCK)){
+		
+		up(&sem); // release the semaphore so that a writer can wake us up!
+
+		// sleep here until we're woken up and test our condition for true
+		if (wait_event_interruptible(waitq, count <= get_simple_read_buffer_count())){
+			return -ERESTARTSYS;
+		}
+
+		// grab semaphore before trying again
+		if(down_interruptible(&sem)){
+			return -ERESTARTSYS;
+		}
+	} 
+
+	// send as much as we can 
+	// if we're here from a blocking operation then we know that we have enough to fill the request so send count
+	// if we're here from a non-blocking operation, we send what we have 
+	if(filp->f_flags & O_NONBLOCK){
+		dataSentCount = get_simple_read_buffer_count();
+	}else{
+		dataSentCount = count;
+	}
+
+	error_num = copy_to_user(buf, simple_read_buffer, dataSentCount); 
+	if(error_num == 0){
+		remove_simple_read_buffer(dataSentCount);
+	}else{
+		// release semaphore if our copy fails
+		up(&sem);
+		printk(KERN_WARNING"Failed to read characters %d\n", error_num);
+		return -EFAULT;
+	}
+
+	// release semaphore
+	up(&sem);
+
 	printk(KERN_WARNING"Pilote READ : Hello, world\n");
 	return 0;
 }
 
 static ssize_t module_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos) {
 
-	char cdata = 'a';
-	char *pData = &cdata;
+	int dataSentCount;
+	int error_num;
 
-	copy_from_user(pData, buf, count);
-
-	fill_simple_write_buffer(*pData);
-
-	if(is_simple_write_buffer_full())
-	{
-		get_simple_write_buffer();	
-		printk("BUFFER FULL - TRANSFERING TO RING BUFFER");
-		move_simple_to_ring_write_buffer();
-		get_simple_write_buffer();
-		get_ring_write_buffer();
+	// grab the semaphore
+	if (down_interruptible(&write_sem)){
+		 printk("Unable to acquire Semaphore\n");
+		return -ERESTARTSYS;
 	}
 
-	printk(KERN_WARNING"Pilote WRITE NEWW : Hello, world\n");
+
+
+	// non blocking, send data right away to simple write buffer, and if full fail sending data
+	if(filp->f_flags & O_NONBLOCK)){
+		printk("NO DATA SENT TO USER!");
+		return -EAGAIN;
+	}
+
+	printk("%s", simple_write_buffer);
+
+	/*
+	while(count > get_simple_read_buffer_count() && !(filp->f_flags & O_NONBLOCK)){
+		
+		up(&sem); // release the semaphore so that a writer can wake us up!
+
+		// sleep here until we're woken up and test our condition for true
+		if (wait_event_interruptible(waitq, count <= get_simple_read_buffer_count())){
+			return -ERESTARTSYS;
+		}
+
+		// grab semaphore before trying again
+		if(down_interruptible(&sem)){
+			return -ERESTARTSYS;
+		}
+	} 
+
+	// send as much as we can 
+	// if we're here from a blocking operation then we know that we have enough to fill the request so send count
+	// if we're here from a non-blocking operation, we send what we have 
+	if(filp->f_flags & O_NONBLOCK){
+		dataSentCount = get_simple_read_buffer_count();
+	}else{
+		dataSentCount = count;
+	}
+
+	error_num = copy_to_user(buf, simple_read_buffer, dataSentCount); 
+	if(error_num == 0){
+		remove_simple_read_buffer(dataSentCount);
+	}else{
+		// release semaphore if our copy fails
+		up(&sem);
+		printk(KERN_WARNING"Failed to read characters %d\n", error_num);
+		return -EFAULT;
+	}
+
+	
+
+	*/
+
+	// release semaphore
+	up(&write_sem);
+
+	wake_up_interruptible(&waitq);
+
+	printk(KERN_WARNING"Pilote WRITE : Hello, world\n");
    return 0;
 }
 
 static void release_buffers(void){
-	kfree(write_buffer);
-	kfree(read_buffer);
-	circular_buf_free(write_cbuf);
-	circular_buf_free(read_cbuf);
+//	kfree(write_buffer);
+	kfree(RxBuf);
+//	circular_buf_free(write_cbuf);
+	circular_buf_free(RxBuf_cbuf);
+//	release_region(MY_BASEPORT, MY_NR_PORTS);
 }
 
 static int module_open(struct inode *inode, struct file *filp) {
-   printk(KERN_WARNING"Pilote OPEN : Hello, world\n");
-   return 0;
+
+	spin_lock(&access_lock);
+
+	// do not let in more than one user at a time unless it's the same user
+	if(user_count == 1 && user_owner_id != current_uid().val){
+		spin_unlock(&access_lock);
+		printk("NOT THE SAME USER %u", user_owner_id);
+		return -ENOTTY;
+	}
+
+	// set user id if it's the first time for user
+	if(user_count == 0){
+		user_owner_id = current_uid().val;
+	}
+
+	user_count++;
+	spin_unlock(&access_lock);
+
+	// check what mode we are in and increment counter
+	if((filp->f_flags & O_ACCMODE) == O_RDONLY && read_count == 0){
+		activeOpenModeList[0] = ++read_count; 
+	}else if((filp->f_flags & O_ACCMODE) == O_WRONLY && write_count == 0){
+		activeOpenModeList[1] = ++write_count; 
+	}else if((filp->f_flags & O_ACCMODE) == O_RDWR && ((write_count == 0) && (read_count == 0))){
+		activeOpenModeList[0] = ++read_count; 
+		activeOpenModeList[1] = ++write_count; 
+	}else{
+		// kick out user that tries to open a mode more than once
+		printk("ONLY ONE READ, WRITE, OR READWRITE read:%d write:%d", read_count, write_count);
+		return -ENOTTY;
+	}
+
+	printk(KERN_WARNING"Pilote OPEN : Hello, world\n");
+	return 0;
 }
 
+// gets called when user closes file or program ends 
 static int module_release(struct inode *inode, struct file *filp) {
-   release_buffers();
+
+	// remove active mode from list
+	if((filp->f_flags & O_ACCMODE) == O_RDONLY){
+		read_count = 0;
+		activeOpenModeList[0] = read_count;
+	}else if((filp->f_flags & O_ACCMODE) == O_WRONLY){
+		write_count = 0;
+		activeOpenModeList[1] = write_count;
+	}else if((filp->f_flags & O_ACCMODE) == O_RDWR){
+		read_count = 0;
+		write_count = 0;
+		activeOpenModeList[0] = read_count;
+		activeOpenModeList[1] = write_count;	
+	}
+
+	// decrement user count if no more open modes
+	if(activeOpenModeList[0] == 0 && activeOpenModeList[1] == 0){
+		spin_lock(&access_lock);
+		user_count--;
+		spin_unlock(&access_lock);
+	}
+
    printk(KERN_WARNING"Pilote RELEASE : Hello, world\n");
    return 0;
 }
 
 static __init int pilote_init(void)	
 {
-	create_ring_write_buffer();
+	//create_ring_write_buffer();
 	create_ring_read_buffer();
 	set_up_ring_read_buffer();
 
@@ -224,14 +464,20 @@ static __init int pilote_init(void)
 	device_create(cclass, NULL, dev, NULL, "myModuleTest");
 
 	cdev_init(&mycdev, &myModule_fops);
-	cdev_add(&mycdev, dev, 1); // dev??
+	cdev_add(&mycdev, dev, 1); 
+
+	sema_init(&sem, 1);
+	sema_init(&write_sem, 1);
 
 	printk(KERN_WARNING "Pilote : Hello, world (Pilote)\n");
 	return 0;
 }
 
+// gets called when rmmod is called
 static void __exit pilote_exit(void)
 {
+	release_buffers();
+
 	cdev_del(&mycdev);
 
 	device_destroy(cclass, dev);
